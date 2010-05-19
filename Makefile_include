@@ -1,0 +1,305 @@
+#first idea: http://git.joshuawise.com/cgi-bin/gitweb.cgi?p=vterm.git;a=blob;f=Makefile;hb=HEAD
+
+
+
+
+
+#include this makefile in your project, and set all neccessary variables 
+
+
+
+
+
+# not everything neccessary, but whos knows
+LIB_ALL_VHD=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "*.vhd*" | grep -v .svn | grep -v tb_ | grep -v test_ | grep -v _test. ; done)
+LIB_ALL_VHD_LOCAL=$(shell for lib in $(LIB_ALL_VHD); do basename $$lib; done)
+
+#get all ip-cores, first globally, then locally, then convert the name to vhd, because thats what we want
+LIB_ALL_XCO=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "*.xco"; done)
+LIB_ALL_COE=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "*.coe"; done)
+
+LIB_ALL_XCO_LOCAL=$(shell for file in $(LIB_ALL_XCO); do basename $$file; done)
+LIB_ALL_COE_LOCAL=$(shell for file in $(LIB_ALL_COE); do basename $$file; done)
+
+# marry all created vhd-files together
+XCO_LOCAL_VHD=$(subst .xco,.vhd,$(LIB_ALL_XCO_LOCAL) $(XCO_LOCAL))
+
+# construct a variable which contains alls vhd(l)-files from the project, without testbenches
+VHD_ALL=$(VHD_LOCAL) $(LIB_ALL_VHD) $(XCO_LOCAL_VHD)
+
+#templates, which will be sed'd to be used in this project... could be stored centrally, later
+#TODO: these files can lie in the projekt-folder or where this Makefile is included from...
+IMPACT_FPGA?=$(INCLUDEDIR)template_impact_fpga.cmd
+IMPACT_PROM?=$(INCLUDEDIR)template_impact_prom.cmd
+ISIM_BATCH?=$(INCLUDEDIR)batch_isim.tcl
+XST_SCRIPT?=$(INCLUDEDIR)template_xst
+
+#part specific data...
+PART?=xc3s1000
+PACKAGE?=ft256
+SPEED?=-4
+
+#INTSTYLE=-intstyle ise
+INTSTYLE=-intstyle silent
+
+WAVEFORMVIEWER=/opt/gtkwave/bin/gtkwave
+
+all: fileinfo
+
+#place where environment variables can be found. doing it like this, the global "source" statement doesn't have to be in .bashrc
+XILINX=. /opt/xilinx/10.1/ISE/settings32.sh
+
+fileinfo:
+	@echo 'Makefile: Known local vhd-Files:'
+	@echo ''
+	@echo $(shell for file in $(VHD_LOCAL); do echo $$file;done)
+	@echo ''
+	@echo 'Makefile: Known local xco-Files:'
+	@echo ''
+	@echo $(shell for file in $(XCO_LOCAL); do echo $$file;done)
+	@echo ''
+	@echo 'Makefile: Known library vhd-Files:'
+	@echo ''
+	@echo $(shell for file in $(LIB_ALL_VHD); do echo $$file;done)
+	@echo ''
+	@echo 'Makefile: Known library xco-Files:'
+	@echo ''
+	@echo $(shell for file in $(LIB_ALL_XCO); do echo $$file;done)
+	@echo ''
+	@echo 'Makefile: All known vhd-Files:'
+	@echo ''
+	@echo $(shell for file in $(VHD_ALL); do echo $$file;done)
+	@echo ''
+
+###
+#
+# weak informational textfiles for isetools, batch scripts and configurtion files...
+#
+###
+%.prj: $(VHD_ALL) %.vhd
+	@echo 'Makefile: Creating $@'
+	@rm -f $@
+	@for file in $(VHD_ALL); do echo vhdl work '"'$$file'"' >> $@; done
+	@echo vhdl work '"'$*.vhd'"' >> $@ #doesn't matter if vhd-files are doubled in prj-files, but doing this we can implicitly include _test files in local dir while building testbenches without naming them in the VHD_LOCAL variable
+
+%.lso:
+	@echo 'Makefile: Creating $@'
+	@echo work > $@
+
+impact_%_fpga.cmd: $(IMPACT_FPGA) 
+	@echo 'Makefile: Creating FPGA-batchfile $@ for impact'
+	sed -e s/XXX/$*/ < $(IMPACT_FPGA) > $@
+
+impact_%_prom.cmd: $(IMPACT_PROM) 
+	@echo 'Makefile: Creating PROM-batchfile $@ for impact'
+	sed -e s/XXX/$*/ < $(IMPACT_PROM) > $@
+
+%.xst: $(XST_SCRIPT)
+	@echo 'Makefile: Creating xst-Script for Project $*'
+	sed -e s/xxxTARGETxxx/$*/ < $(XST_SCRIPT) > $@
+	@echo 'Makefile: Inserting FPGA-Specific knowlegde into script'
+	sed -i $@ -e s/xxxPARTxxx/$(PART)/
+	sed -i $@ -e s/xxxPACKAGExxx/$(PACKAGE)/
+	sed -i $@ -e s/xxxSPEEDxxx/$(SPEED)/
+
+###
+#
+# generating usable vhd-files out of ip-cores
+#
+###
+#TODO: hässliches konstrukt, und funktioniert auch nicht... Problem: xco/coe-files in den libs müssen auf aktualisierungen überwacht werden und dann eigentlich nochmal lokal kpoiert werden. im moment brauchts ein make clean...
+THIS_XCO=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "$*.xco"; done)
+THIS_COE=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "$**.coe"; done)
+%.xco: $(shell for lib in $(LIBS); do find $(LIBDIR) -name "$*.xco"; done)
+	@echo 'Makefile: Copying xcos and coes from IP-Core $* into local dir'
+	@if [ -n "$(THIS_XCO)" ]; then  \
+		cp --preserve=timestamps --update $(THIS_XCO) .; \
+		echo 'Makefile: found the following files: $(THIS_XCO)'; \
+	else \
+		echo 'Makefile: no xco-files found'; \
+	fi
+	@if [ -n "$(THIS_COE)" ]; then  \
+		cp --preserve=timestamps --update $(THIS_COE) .; \
+		echo 'Makefile: found the following files: $(THIS_COE)'; \
+	else \
+		echo 'Makefile: no coe-files found'; \
+	fi
+
+%.vhd: %.xco
+	@echo 'Makefile: Generating IP-Core: $* -- saving existing xco-file into temporay one, since coregen is modifying them in a absolutely stupid manner...'
+	@echo 'Makefile: we dont want coregen to do this, because git, make and others will be confused by this behaviour...'
+	@echo 'Makefile: preserving timestamps to make make happy'
+	cp --preserve=timestamps $< .backup_$<
+	$(XILINX); coregen -b $<
+	@echo 'Makefile: restoring previously saved xco-file to revert coregens changes (they rewrite the header with current date...)'
+	mv .backup_$< $<
+
+###
+#
+# complete buildprocess for *.bit-file
+#
+###
+%.ngc: %.xst %.prj %.lso
+	@echo 'Makefile: Creating $@'
+	@mkdir -p xst/projnav.tmp
+	$(XILINX); xst $(INTSTYLE) -ifn $*.xst -ofn $*.syr
+
+%.ngd: %.ngc $(UCF)
+	@echo 'Makefile: Creating $@'
+	$(XILINX); ngdbuild $(INTSTYLE) -dd _ngo -uc $(UCF) -nt timestamp -p $(PART)-$(PACKAGE)$(SPEED) "$*.ngc" $*.ngd
+
+%_map.ncd %.pcf: %.ngd
+	@echo 'Makefile: Creating $@'
+	$(XILINX); map $(INTSTYLE) -p $(PART)-$(PACKAGE)$(SPEED) -cm area -pr b -k 4 -c 100 -o $*_map.ncd $*.ngd $*.pcf
+
+%.ncd: %_map.ncd %.pcf
+	@echo 'Makefile: Creating $@'
+	$(XILINX); par $(INTSTYLE) -w -ol std -t 1 $*_map.ncd $*.ncd $*.pcf
+
+%.twr: %_map.ncd %.pcf %.ncd $(UCF)
+	@echo 'Makefile: Creating $@'
+	$(XILINX); trce $(INTSTYLE) -e 3 -l 3 -xml $*.twx $*.ncd -o $*.twr $*.pcf -ucf $(UCF)
+
+%.bit %.msk: %.ncd $(BITGEN_OPTION_FILE)
+	@echo 'Makefile: Creating $@'
+	$(XILINX); bitgen $(INTSTYLE) -m -f $(BITGEN_OPTION_FILE) $*.ncd
+
+###
+#
+# flashing/programming
+#
+###
+%_fpga: %.bit %.msk impact_%_fpga.cmd
+	@echo 'Makefile: Programming FPGA with $@'
+	$(XILINX); impact -batch impact_$*_fpga.cmd
+
+%_prom: %.bit  impact_%_prom.cmd
+	@echo 'Makefile: Programming PROM with $@'
+	$(XILINX); impact -batch impact_$*_prom.cmd
+
+###
+#
+# testbenches
+#
+###
+%_test.bin: $(VHD_ALL) %_test.prj
+	@echo 'Makefile: Creating Testbenchbinary $@'
+	$(XILINX); fuse -incremental -rangecheck -prj $*_test.prj -top $*_test -o $*_test.bin
+
+%_test.vcd: %_test.bin
+	@echo 'Makefile: Creating ValueCangeDump $@'
+	$(XILINX); ./$< -tclbatch $(ISIM_BATCH);
+	mv isimdumpdata.vcd $@
+
+%_wave: %_test.vcd
+	@echo 'Makefile: Executing gtkwave with $@'
+	$(WAVEFORMVIEWER) $< -a $*_test.sav
+
+###
+#
+# ghdl-support... doesn't work...
+#
+###
+GHDL_WORKDIR = ./ghdl_workdir
+UNISIMDIR = ./unisim
+CORELIBDIR = ./corelib
+CONFIGDIR = ./config
+GHDL_OPTIONS =  --workdir=$(GHDL_WORKDIR) --ieee=synopsys 
+
+#klappt auch nicht mit xilinx-code weil die library "secureip" nicht mit mitgelifert wird...
+#und der spaceclimbercode schmeisst haufenweise fehler...
+motCon_ctrl__syntax: $(VHD_ALL)
+	rm -rf  config_lib ghdl_workdir
+	mkdir -p config_lib ghdl_workdir
+	ghdl -i --work=config --workdir=config_lib -fexplicit --std=93c --ieee=synopsys config.vhd
+	ghdl -i -Pconfig_lib --workdir=ghdl_workdir -fexplicit --std=93c --ieee=synopsys  $(VHD_LOCAL) $(LIB_ALL_VHD) 
+	ghdl -s -Pconfig_lib --workdir=ghdl_workdir -fexplicit --std=93c --ieee=synopsys  $(VHD_LOCAL) $(LIB_ALL_VHD) 
+	rm -rf  config_lib ghdl_workdir
+	
+
+%_test.ghdl: $(VHD_ALL)
+	rm -rf $(GHDL_WORKDIR) $(UNISIMDIR) $(CORELIBDIR)
+	mkdir -p $(GHDL_WORKDIR)
+	mkdir -p $(UNISIMDIR)
+	mkdir -p $(CORELIBDIR)
+	ghdl -i --work=unisim --workdir=$(UNISIMDIR) --std=93c -fexplicit --ieee=synopsys /opt/xilinx/10.1/ISE/vhdl/src/unisims/*.vhd 
+	ghdl -i --work=xilinxcorelib --workdir=$(CORELIBDIR) --std=93c -fexplicit --ieee=synopsys /opt/xilinx/10.1/ISE/vhdl/src/XilinxCoreLib/*.vhd
+	ghdl -i --work=work $(GHDL_OPTIONS) $(VHD_ALL)
+	ghdl -m -P$(UNISIMDIR) -P$(CORELIBDIR) --workdir=$(GHDL_WORKDIR) --std=93c -fexplicit --ieee=synopsys $(VHD_ALL)
+	ghdl -r -P$(UNISIMDIR) -P$(CORELIBDIR) --workdir=$(GHDL_WORKDIR) --std=93c -fexplicit --ieee=synopsys $*
+
+
+.PHONY: program
+
+.PRECIOUS: $(XCO_LOCAL_VHD) %_test.bin %.bit %_test.vcd %.xco
+##
+#
+# "plumbing layer" -- cleaning up of unwanted temporaray files
+#
+##
+
+# every file which may be created during build-process and has $(PROJECT) as a prefix
+ISE_ENDINGS = .bgn .bit .bld .drc .ncd .ngd .ngr .pad .par .pcf .ptwx .twr .unroutes .xpi _map.map _map.mrp _map.ncd _map.ngm _pad.csv .cmd_log _guide.ncd .lso _map.xrpt .ngc _ngdbuild.xrpt .ntrc_log _pad.txt _par.xrpt _prev_built.ngd .prj .restore .stx _summary.html .syr .twx _xst.xrpt _timesim.nlf _timesim.vhd .msk .svf .restore .mcs .prm .sig
+
+ISE_STATISTICS = _summary.xml _usage.xml _summary.html device_usage_statistics.html
+
+# every file which may be created during build-process
+CRAP = device_usage_statistics.html _impactbatch.log xlnx_auto_0.ise
+# every dir which may be created during build-process
+ISE_DIRS = simu xst _ngo xlnx_auto_0_xdb tmp
+
+CORE_ENDINGS = _flist.txt _mult_gen_v10_1_xst_1.ngc_xst.xrpt .ngc _readme.txt .vho .vhd _xmdf.tcl filt_decode_rom.mif COEFF_auto0* _fir_compiler_v4_0_xst_1* .v .veo .asy .sym .mif
+
+
+CORE_NAMES = $(subst .vhd,,$(XCO_LOCAL_VHD))
+
+clean: statclean isimclean iseclean coreclean dirclean
+	@echo 'Makefile: Doing $@'
+
+statclean:
+	@echo 'Makefile: Doing $@'
+	for stat in $(ISE_STATISTICS); do \
+		rm -rf *$$stat ; \
+	done
+
+isimclean:
+	@echo 'Makefile: Doing $@'
+	rm -rf isim
+	rm -f isimwavedata.xwv
+	rm -f isim.log
+	rm -f isim.cmd
+	rm -f *.sav
+	rm -f *_test.bin
+	rm -f *_test.vcd
+
+dirclean:
+	@echo 'Makefile: Doing $@'
+	for dir in $(ISE_DIRS); do \
+		rm -rf $$dir ; \
+	done
+
+iseclean:
+	@echo 'Makefile: Doing $@'
+	for crap in $(ISE_ENDINGS); do \
+		rm -f *$$crap ; \
+	done
+	rm -f fuse.log
+	rm -f xlnx_auto_0.ise
+
+coreclean:
+	@echo 'Makefile: Doing $@ for local IP-Cores:'
+	for core in $(CORE_NAMES); do \
+		for ending in $(CORE_ENDINGS); do \
+			rm -f $$core$$ending ; \
+		done; \
+	done; 
+	@echo 'Makefile: Doing $@ for imported library IP-Cores:'
+	@echo 'TODO not very clean solution... maybe, too much is deleted...'
+	if [ -n "$(LIB_ALL_XCO_LOCAL)" ];then \
+		rm -f $(LIB_ALL_XCO_LOCAL); \
+	fi
+	if [ -n "$(LIB_ALL_COE_LOCAL)" ];then \
+		rm -f $(LIB_ALL_COE_LOCAL); \
+	fi
+	rm -f coregen.log \
+	rm -f core_resources.txt
