@@ -9,9 +9,13 @@
 
 
 
+PROJECT_NAME = $(shell basename `pwd`)
+#TODO: svn?
+PROJECT_ID = $(shell git rev-parse HEAD | cut -b 1-8)
 
 # not everything neccessary, but whos knows
-LIB_ALL_VHD=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "*.vhd*" | grep -v .svn | grep -v tb_ | grep -v test_ | grep -v _test. ; done)
+LIB_ALL_ALL_VHD=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "*.vhd*" | grep -v .swp | grep -v .svn ; done)
+LIB_ALL_VHD=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "*.vhd*" | grep -v .swp | grep -v .svn | grep -v tb_ | grep -v test_ | grep -v _test. ; done)
 LIB_ALL_VHD_LOCAL=$(shell for lib in $(LIB_ALL_VHD); do basename $$lib; done)
 
 #get all ip-cores, first globally, then locally, then convert the name to vhd, because thats what we want
@@ -33,6 +37,7 @@ IMPACT_FPGA?=$(INCLUDEDIR)template_impact_fpga.cmd
 IMPACT_PROM?=$(INCLUDEDIR)template_impact_prom.cmd
 ISIM_BATCH?=$(INCLUDEDIR)batch_isim.tcl
 XST_SCRIPT?=$(INCLUDEDIR)template_xst
+BITGEN_OPTION_FILE?=$(INCLUDEDIR)template_bitgen.ut
 
 #part specific data...
 PART?=xc3s1000
@@ -44,12 +49,15 @@ INTSTYLE=-intstyle silent
 
 WAVEFORMVIEWER=/opt/gtkwave/bin/gtkwave
 
+VHDocL=~/masterarbeit.git/quellcode/VHDocL/vhdocl
+DOXYGEN = /opt/doxygen/bin/doxygen
+
 all: fileinfo
 
 #place where environment variables can be found. doing it like this, the global "source" statement doesn't have to be in .bashrc
 XILINX=. /opt/xilinx/10.1/ISE/settings32.sh
 
-fileinfo:
+info:
 	@echo 'Makefile: Known local vhd-Files:'
 	@echo ''
 	@echo $(shell for file in $(VHD_LOCAL); do echo $$file;done)
@@ -70,6 +78,22 @@ fileinfo:
 	@echo ''
 	@echo $(shell for file in $(VHD_ALL); do echo $$file;done)
 	@echo ''
+
+doku: $(VHD_ALL)
+	@echo 'Makefile: Creating Dokumentation with $@'
+	perl $(VHDocL) $(VHD_ALL) --rightlogo=/home/$(USER)/masterarbeit.git/praese1/bilder/template/DFKI_logo.png --leftlogo=/home/$(USER)/masterarbeit.git/praese1/bilder/template/logo_350.jpg
+
+DoxyFile:
+	$(DOXYGEN) -g $@
+	sed -i $@ -e s/'PROJECT_NAME           ='/'PROJECT_NAME           = $(PROJECT_NAME)'/
+	sed -i $@ -e s/'PROJECT_NUMBER         ='/'PROJECT_NUMBER         = $(PROJECT_ID)'/
+	sed -i $@ -e s/'OUTPUT_DIRECTORY       ='/'OUTPUT_DIRECTORY       = doxygen'/
+	sed -i $@ -e s/'INPUT                  ='/'INPUT                  = $(VHD_ALL)'/
+	sed -i $@ -e s/'HAVE_DOT               = NO'/'HAVE_DOT               = YES'/
+	sed -i $@ -e s/'OPTIMIZE_OUTPUT_VHDL   = NO'/'OPTIMIZE_OUTPUT_VHDL   = YES'/
+
+doxy: DoxyFile $(VHDL_ALL)
+	$(DOXYGEN) DoxyFile
 
 ###
 #
@@ -124,6 +148,10 @@ THIS_COE=$(shell for lib in $(LIBS); do find $(LIBDIR) -name "$**.coe"; done)
 	else \
 		echo 'Makefile: no coe-files found'; \
 	fi
+
+#automatically create codeblocks-file... not finished
+%.cbp:
+	./createCodeBlocksProject.sh $(VHD_LOCAL) $(LIB_ALL_ALL_VHD) $(XCO_LOCAL_VHD)
 
 %.vhd: %.xco
 	@echo 'Makefile: Generating IP-Core: $* -- saving existing xco-file into temporay one, since coregen is modifying them in a absolutely stupid manner...'
@@ -229,7 +257,6 @@ motCon_ctrl__syntax: $(VHD_ALL)
 	ghdl -r -P$(UNISIMDIR) -P$(CORELIBDIR) --workdir=$(GHDL_WORKDIR) --std=93c -fexplicit --ieee=synopsys $*
 
 
-.PHONY: program
 
 .PRECIOUS: $(XCO_LOCAL_VHD) %_test.bin %.bit %_test.vcd %.xco
 ##
@@ -253,7 +280,7 @@ CORE_ENDINGS = _flist.txt _mult_gen_v10_1_xst_1.ngc_xst.xrpt .ngc _readme.txt .v
 
 CORE_NAMES = $(subst .vhd,,$(XCO_LOCAL_VHD))
 
-clean: statclean isimclean iseclean coreclean dirclean
+clean: statclean isimclean iseclean coreclean dirclean dokuclean
 	@echo 'Makefile: Doing $@'
 
 statclean:
@@ -285,6 +312,7 @@ iseclean:
 	done
 	rm -f fuse.log
 	rm -f xlnx_auto_0.ise
+	rm -f _impactbatch.log
 
 coreclean:
 	@echo 'Makefile: Doing $@ for local IP-Cores:'
@@ -303,3 +331,9 @@ coreclean:
 	fi
 	rm -f coregen.log \
 	rm -f core_resources.txt
+
+dokuclean:
+	rm -rf doc
+	rm -rf doxygen
+	rm -f DoxyFile
+
